@@ -1,0 +1,20 @@
+export const sdgs = [
+  { value: "1 - No poverty", label: "1 - No poverty" },
+  { value: "2 - Zero hunger", label: "2 - Zero hunger" },
+  { value: "3 - Good health and well-being", label: "3 - Good health and well-being" },
+  { value: "4 - Quality Education", label: "4 - Quality Education" },
+  { value: "5 - Gender equality", label: "5 - Gender equality" },
+  { value: "6 - Clean water and sanitation", label: "6 - Clean water and sanitation" },
+  { value: "7 - Affordable and clean energy", label: "7 - Affordable and clean energy" },
+  { value: "8 - Decent work and economic growth", label: "8 - Decent work and economic growth" },
+  { value: "9 - Industry, innovation and infrastructure", label: "9 - Industry, innovation and infrastructure" },
+  { value: "10 - Reduced inequalities", label: "10 - Reduced inequalities" },
+  { value: "11 - Sustainable cities and economies", label: "11 - Sustainable cities and economies" },
+  { value: "12 - Responsible consumption and production", label: "12 - Responsible consumption and production" },
+  { value: "13 - Climate action", label: "13 - Climate action" },
+  { value: "14 - Life below water", label: "14 - Life below water" },
+  { value: "15 - Life on land", label: "15 - Life on land" },
+  { value: "16 - Peace, justice and strong institutions", label: "16 - Peace, justice and strong institutions" },
+  { value: "17 - Partnership for the goals", label: "17 - Partnership for the goals" },
+  { value: "Undecided", label: "Undecided" }
+]; 
