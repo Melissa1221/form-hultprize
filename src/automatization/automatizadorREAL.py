@@ -55,7 +55,9 @@ class FormAutomation:
         self.driver = None
         self.excel_path = os.getenv('EXCEL_PATH')
         self.screenshots_folder = os.getenv('SCREENSHOT_FOLDER', 'error_screenshots')
-        self.form_url = os.getenv('FORM_URL', 'http://localhost:3000')
+        # Forzar la URL de Hult Prize independientemente del .env
+        self.form_url = 'https://www.hultprize.org/startup-pre-registration-is-now-open/'
+        self.logger.info(f"URL del formulario configurada a: {self.form_url}")
         self.wait_time = int(os.getenv('WAIT_TIME', 2))
         self.default_phone_code = '+51'  # Código por defecto para Perú
         
@@ -330,17 +332,33 @@ class FormAutomation:
             if element:
                 select = Select(element)
                 
-                # Imprimir todas las opciones disponibles
-                if element_id == "university":
-                    self.logger.info("Opciones disponibles en el select:")
-                    for option in select.options:
-                        self.logger.info(f"- value: '{option.get_attribute('value')}', text: '{option.text}'")
-                    # Para universidades, seleccionar por texto visible
-                    select.select_by_visible_text(str(value))
-                else:
-                    # Para otros campos, seleccionar por valor
+                # Imprimir todas las opciones disponibles para diagnóstico
+                self.logger.info(f"Opciones disponibles en {element_id}:")
+                for option in select.options:
+                    self.logger.info(f"- value: '{option.get_attribute('value')}', text: '{option.text}'")
+                
+                try:
+                    # Intentar primero por valor
+                    self.logger.info(f"Intentando seleccionar por valor: {value}")
                     select.select_by_value(str(value))
-                    
+                except:
+                    try:
+                        # Si falla, intentar por texto visible
+                        self.logger.info(f"Intentando seleccionar por texto visible: {value}")
+                        select.select_by_visible_text(str(value))
+                    except:
+                        # Si ambos fallan, buscar coincidencia parcial
+                        self.logger.info("Buscando coincidencia parcial...")
+                        found = False
+                        for option in select.options:
+                            if str(value).lower() in option.text.lower() or str(value).lower() in option.get_attribute('value').lower():
+                                self.logger.info(f"Coincidencia encontrada: {option.text}")
+                                select.select_by_value(option.get_attribute('value'))
+                                found = True
+                                break
+                        if not found:
+                            raise Exception(f"No se encontró opción que coincida con: {value}")
+                
                 self.logger.debug(f"Opción seleccionada exitosamente en {element_id}")
                 return True
             self.logger.warning(f"No se encontró el elemento select {element_id}")
@@ -398,182 +416,346 @@ class FormAutomation:
         try:
             self.logger.info(f"Iniciando llenado de formulario para startup: {row_data['startup_name']}")
             
+            # Esperar a que la página se cargue completamente
+            self.logger.info("Esperando a que la página se cargue completamente...")
+            time.sleep(10)  # Dar más tiempo para la carga inicial
+            
+            # Función helper para marcar checkbox
+            def mark_checkbox(checkbox_id, should_check=True):
+                try:
+                    # Esperar a que el checkbox sea clickeable
+                    checkbox = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.ID, checkbox_id))
+                    )
+                    
+                    # Scroll al checkbox con offset para evitar problemas de navegación
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", 
+                        checkbox
+                    )
+                    time.sleep(2)  # Esperar a que el scroll termine
+                    
+                    if should_check and not checkbox.is_selected():
+                        # Intentar múltiples métodos para marcar el checkbox
+                        try:
+                            # Método 1: JavaScript directo
+                            self.driver.execute_script(
+                                """
+                                arguments[0].click();
+                                arguments[0].checked = true;
+                                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                                """, 
+                                checkbox
+                            )
+                        except:
+                            try:
+                                # Método 2: ActionChains
+                                actions = ActionChains(self.driver)
+                                actions.move_to_element(checkbox).click().perform()
+                            except:
+                                # Método 3: Click normal
+                                checkbox.click()
+                        
+                        # Verificar que se marcó
+                        time.sleep(1)
+                        if not checkbox.is_selected():
+                            # Último intento con JavaScript
+                            self.driver.execute_script(
+                                "arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                                checkbox
+                            )
+                        
+                        self.logger.info(f"Checkbox {checkbox_id} marcado: {checkbox.is_selected()}")
+                        return checkbox.is_selected()
+                    
+                    return True
+                    
+                except Exception as e:
+                    self.logger.error(f"Error al marcar checkbox {checkbox_id}: {str(e)}")
+                    return False
+
             # Información Básica
-            if not self.safe_send_keys("startupName", row_data['startup_name']):
+            if not self.safe_send_keys("23e058fb-9c48-4fbe-9d62-87a8b366ad55", row_data['startup_name']):
                 raise Exception("Error al llenar el nombre del startup")
             
-            # Selección de País (usando el código ISO)
-            country_name = row_data['country']
-            country_code = self.country_codes.get(country_name)
-            if not country_code:
-                raise Exception(f"País no encontrado en el mapeo: {country_name}")
-            
-            if not self.safe_select_option("country", country_code):
+            # Para Perú/Lima, simplificamos la selección
+            if not self.safe_select_option("country_code", "PE"):  # Código ISO para Perú
                 raise Exception("Error al seleccionar el país")
             
-            # Ciudad
-            if not self.safe_select_option("city", row_data['city']):
+            # Ciudad (Lima por defecto)
+            if not self.safe_select_option("city", "Lima"):
                 raise Exception("Error al seleccionar la ciudad")
-            if row_data['city'] == "Other":
-                if not self.safe_send_keys("otherCity", row_data['other_city']):
-                    raise Exception("Error al llenar otra ciudad")
 
-            # Universidad (usando el nombre directamente)
+            # Universidad (usando el ID del mapeo)
             university_name = row_data['university']
-            if not self.safe_select_option("university", university_name):
+            university_id = self.university_codes.get(university_name)
+            if not university_id:
+                self.logger.error(f"Universidad no encontrada en el mapeo: {university_name}")
+                raise Exception(f"Universidad no encontrada en el mapeo: {university_name}")
+            
+            self.logger.info(f"Seleccionando universidad: {university_name} (ID: {university_id})")
+            if not self.safe_select_option("UniversityId__c", university_id):
                 raise Exception("Error al seleccionar la universidad")
-            if university_name == "Other":
-                if not self.safe_send_keys("otherUniversity", row_data.get('other_university', '')):
-                    raise Exception("Error al llenar otra universidad")
 
             # Información del Capitán
             self.logger.info("Llenando información del capitán")
             captain_fields = {
-                "firstName": row_data['captain_first_name'],
-                "lastName": row_data['captain_last_name'],
-                "email": row_data['captain_email']
+                "7c6f527f-90e5-4481-9d2f-b9686e9e1bfd": row_data['captain_first_name'],  # FirstName
+                "642a9c53-4ea8-482d-bef4-29f7a5444d58": row_data['captain_last_name'],   # LastName
+                "4a97fb6f-789e-48f3-847e-6872727e0c1c": row_data['captain_email']        # Email
             }
             
             for field_id, value in captain_fields.items():
                 if not self.safe_send_keys(field_id, value):
-                    raise Exception(f"Error al llenar {field_id} del capitán")
+                    raise Exception(f"Error al llenar campo del capitán: {field_id}")
 
-            # Código de teléfono del capitán (siempre +51)
-            if not self.safe_select_option("phoneCode", self.default_phone_code):
-                raise Exception("Error al seleccionar el código de teléfono del capitán")
-            if not self.safe_send_keys("phone", str(row_data['captain_phone'])):
+            # Teléfono del capitán
+            try:
+                self.logger.info("Intentando llenar el teléfono del capitán...")
+                
+                # Seleccionar el código de país para Perú (+51)
+                phone_code_select = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "StyledDropdown-sc-186t4dl-0"))
+                )
+                Select(phone_code_select).select_by_value("+51")
+                self.logger.info("Código de país seleccionado: +51")
+                
+                # Encontrar y llenar el campo de teléfono
+                phone_element = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "ee4156f9-e9df-4505-81b6-6d018ace7a32"))
+                )
+                
+                # Scroll y espera
+                self.driver.execute_script("arguments[0].scrollIntoView(true);", phone_element)
+                time.sleep(2)
+                
+                # Formatear el número (remover +51 o 51 si existe)
+                phone_number = str(row_data['captain_phone'])
+                phone_number = phone_number.replace('+51', '').replace('51', '', 1) if phone_number.startswith(('51', '+51')) else phone_number
+                
+                # Usar JavaScript para establecer el valor
+                self.driver.execute_script("arguments[0].value = arguments[1];", phone_element, phone_number)
+                self.logger.info(f"Teléfono del capitán llenado: {phone_number}")
+                
+            except Exception as e:
+                self.logger.error(f"Error al llenar el teléfono del capitán: {str(e)}")
+                self.logger.error(f"Traceback completo: {traceback.format_exc()}")
                 raise Exception("Error al llenar el teléfono del capitán")
 
-            # Universidad diferente para el capitán
-            captain_university = row_data.get('captain_university')
-            if pd.notna(captain_university) and captain_university.strip():
-                self.logger.info(f"Capitán tiene universidad diferente: {captain_university}")
-                try:
-                    # Marcar checkbox usando JavaScript y esperar a que sea clickeable
-                    checkbox = WebDriverWait(self.driver, 10).until(
-                        EC.element_to_be_clickable((By.ID, "differentUniversity1"))
-                    )
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
-                    time.sleep(1)
-                    
-                    # Intentar diferentes métodos para marcar el checkbox
-                    try:
-                        # Primer intento: click directo
-                        checkbox.click()
-                    except:
-                        try:
-                            # Segundo intento: JavaScript click
-                            self.driver.execute_script("arguments[0].click();", checkbox)
-                        except:
-                            # Tercer intento: Actions chain
-                            actions = ActionChains(self.driver)
-                            actions.move_to_element(checkbox).click().perform()
-                    
-                    time.sleep(1)
-                    
-                    # Verificar si se marcó y seleccionar los campos relacionados
-                    if checkbox.is_selected():
-                        self.logger.info("Checkbox de universidad diferente marcado exitosamente para el capitán")
-                        
-                        # Seleccionar país
-                        country_code = self.country_codes.get(row_data['country'])
-                        self.safe_select_option("memberCountry1", country_code)
-                        time.sleep(1)
-                        
-                        # Seleccionar ciudad
-                        self.safe_select_option("memberCity1", row_data['city'])
-                        time.sleep(1)
-                        
-                        # Seleccionar universidad
-                        self.select_university("memberUniversity1", captain_university, "otherUniversity1")
-                    else:
-                        self.logger.warning("No se pudo marcar el checkbox de universidad diferente para el capitán")
-                        raise Exception("No se pudo marcar el checkbox de universidad diferente para el capitán")
-                
-                except Exception as e:
-                    self.logger.error(f"Error procesando universidad diferente del capitán: {str(e)}")
-                    raise
-
-            # Universidad diferente para el miembro 2
-            if pd.notna(row_data.get('member2_different_university')) and row_data['member2_different_university']:
-                self.logger.info("Miembro 2 tiene universidad diferente")
-                self.driver.find_element(By.ID, "differentUniversity2").click()
-                time.sleep(1)
-                
-                # Seleccionar país y ciudad
-                if not self.safe_select_option("memberCountry2", country_code):
-                    raise Exception(f"Error al seleccionar el país {country_name}")
-
-                time.sleep(1)
-                
-                if not self.safe_select_option("memberCity2", row_data['city']):
-                    raise Exception(f"Error al seleccionar la ciudad {row_data['city']}")
-
-                # Usar la universidad del Excel
-                if not self.select_university("memberUniversity2", "Universidad Nacional Del Callao", "otherUniversity2"):
-                    raise Exception("Error al seleccionar universidad del miembro 2")
-
             # Miembros del equipo (2-4)
+            member_fields = {
+                2: {
+                    'first_name': "26a9c204-1741-47c5-baef-3f24c04d49a6",
+                    'last_name': "754e8291-28ff-432e-8cf1-349ff69446fd",
+                    'email': "3d6579f4-bbb7-4bf8-ac8e-068b55b8c945",
+                    'phone': "f1f3081b-5c7c-46c3-8c1c-651b5ffb0ba3",
+                    'university_checkbox': "member2_different_university"
+                },
+                3: {
+                    'first_name': "9038fb4c-77e7-428e-9699-8d4ee32a2b77",
+                    'last_name': "3c5bd2bb-e7bc-432d-8fb3-44e612d799bb",
+                    'email': "9842094a-ffb5-4457-8d69-4e64bc10708a",
+                    'phone': "d4226650-e612-4a34-9e74-a333e83b10e5",
+                    'university_checkbox': "member3_different_university"
+                },
+                4: {
+                    'first_name': "877e1bbd-2f94-4618-8b50-929f16a8b5b8",
+                    'last_name': "6216c72c-2382-42a8-b833-b7acebc17f26",
+                    'email': "39c4458a-4887-407b-8c57-cb9ad5183665",
+                    'phone': "0a415619-b619-4f9c-99de-109fa1b32985",
+                    'university_checkbox': "member4_different_university"
+                }
+            }
+
             for member_num in range(2, 5):
                 if pd.notna(row_data.get(f'member{member_num}_first_name')):
                     self.logger.info(f"Llenando información del miembro {member_num}")
-                    self.fill_team_member(member_num, row_data)
+                    fields = member_fields[member_num]
+                    
+                    # Llenar campos básicos
+                    self.safe_send_keys(fields['first_name'], row_data[f'member{member_num}_first_name'])
+                    self.safe_send_keys(fields['last_name'], row_data[f'member{member_num}_last_name'])
+                    self.safe_send_keys(fields['email'], row_data[f'member{member_num}_email'])
+                    
+                    # Manejar teléfono
+                    try:
+                        self.logger.info(f"Intentando llenar el teléfono del miembro {member_num}...")
+                        
+                        # Encontrar todos los selectores de código de país
+                        phone_code_selects = self.driver.find_elements(By.CLASS_NAME, "StyledDropdown-sc-186t4dl-0")
+                        self.logger.info(f"Total de selectores de código de país encontrados: {len(phone_code_selects)}")
+                        
+                        # Calcular el índice correcto (0 para capitán, 1 para miembro 2, 2 para miembro 3, 3 para miembro 4)
+                        selector_index = member_num - 1
+                        
+                        if selector_index >= len(phone_code_selects):
+                            self.logger.error(f"No se encontró el selector de código de país para el miembro {member_num}")
+                            raise Exception(f"Selector de código de país no encontrado para miembro {member_num}")
+                        
+                        phone_code_select = phone_code_selects[selector_index]
+                        Select(phone_code_select).select_by_value("+51")
+                        self.logger.info(f"Código de país seleccionado para miembro {member_num}: +51")
+                        
+                        # Encontrar y llenar el campo de teléfono
+                        phone_element = WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_element_located((By.ID, fields['phone']))
+                        )
+                        
+                        # Scroll y espera
+                        self.driver.execute_script("arguments[0].scrollIntoView(true);", phone_element)
+                        time.sleep(2)
+                        
+                        # Formatear el número (remover +51 o 51 si existe)
+                        phone_number = str(row_data[f'member{member_num}_phone'])
+                        phone_number = phone_number.replace('+51', '').replace('51', '', 1) if phone_number.startswith(('51', '+51')) else phone_number
+                        
+                        # Intentar múltiples métodos para establecer el valor
+                        try:
+                            # Método 1: JavaScript
+                            self.driver.execute_script("arguments[0].value = arguments[1];", phone_element, phone_number)
+                            
+                            # Verificar si se estableció el valor
+                            actual_value = phone_element.get_attribute('value')
+                            if not actual_value:
+                                # Método 2: Clear y Send Keys
+                                phone_element.clear()
+                                phone_element.send_keys(phone_number)
+                                
+                                # Verificar nuevamente
+                                actual_value = phone_element.get_attribute('value')
+                                if not actual_value:
+                                    # Método 3: ActionChains
+                                    actions = ActionChains(self.driver)
+                                    actions.move_to_element(phone_element).click().send_keys(phone_number).perform()
+                            
+                            self.logger.info(f"Teléfono del miembro {member_num} llenado: {phone_number}")
+                            self.logger.info(f"Valor actual del campo: {phone_element.get_attribute('value')}")
+                            
+                        except Exception as e:
+                            self.logger.error(f"Error al establecer el valor del teléfono: {str(e)}")
+                            raise
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error al llenar teléfono del miembro {member_num}: {str(e)}")
+                        self.logger.error(traceback.format_exc())
+                        raise Exception(f"Error al llenar el teléfono del miembro {member_num}")
+
+            # Manejar checkboxes de universidad diferente
+            for member_num in range(1, 5):
+                member_university = row_data.get(f'member{member_num}_university')
+                if pd.notna(member_university) and member_university.strip():
+                    self.logger.info(f"Verificando universidad diferente para miembro {member_num}")
+                    checkbox_id = f"differentUniversity{member_num}"
+                    
+                    if mark_checkbox(checkbox_id):
+                        self.logger.info(f"Checkbox de universidad diferente marcado para miembro {member_num}")
+                        
+                        # Seleccionar país y ciudad
+                        country_code = self.country_codes.get(row_data['country'])
+                        self.safe_select_option(f"memberCountry{member_num}", country_code)
+                        time.sleep(1)
+                        
+                        self.safe_select_option(f"memberCity{member_num}", row_data['city'])
+                        time.sleep(1)
+                        
+                        # Seleccionar universidad
+                        self.select_university(
+                            f"memberUniversity{member_num}", 
+                            member_university, 
+                            f"otherUniversity{member_num}"
+                        )
+                    else:
+                        self.logger.warning(f"No se pudo marcar checkbox para miembro {member_num}")
 
             # Selección de SDG
-            if not self.safe_select_option("sdg", row_data['sdg']):
+            if not self.safe_select_option("Sustainable_Development_Goals__c", row_data['sdg']):
                 raise Exception("Error al seleccionar SDG")
 
-            # Experiencia previa
-            if row_data.get('is_competitor'):
-                self.logger.info("Marcando experiencia previa como competidor")
-                try:
-                    competitor_checkbox = self.driver.find_element(By.ID, "competitor")
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", competitor_checkbox)
-                    time.sleep(1)
-                    self.driver.execute_script("arguments[0].click();", competitor_checkbox)
-                    time.sleep(1)
-                    
-                    if not competitor_checkbox.is_selected():
-                        self.logger.warning("No se pudo marcar el checkbox de competidor usando JavaScript, intentando con Actions")
-                        actions = ActionChains(self.driver)
-                        actions.move_to_element(competitor_checkbox).click().perform()
-                        time.sleep(1)
-                except Exception as e:
-                    self.logger.error(f"Error al marcar checkbox de competidor: {str(e)}")
-                    raise
-
-            # Cómo se enteró
+            # Experiencia previa y checkboxes
+            self.logger.info("Marcando checkboxes y confirmaciones")
+            
+            # Scroll al final del formulario primero
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)  # Esperar a que el scroll termine
+            
+            # Manejar radio button de "How did you find out"
             lead_source = row_data['lead_source']
             self.logger.info(f"Seleccionando fuente de información: {lead_source}")
             
-            # Usar XPath para encontrar el radio button por su valor
-            radio_xpath = f"//input[@type='radio'][@value='{lead_source}']"
             try:
-                radio_button = self.driver.find_element(By.XPATH, radio_xpath)
-                radio_button.click()
+                # Buscar todos los radio buttons de LeadSource
+                radio_buttons = self.driver.find_elements(By.NAME, "LeadSource")
+                self.logger.info(f"Radio buttons encontrados: {len(radio_buttons)}")
+                
+                # Encontrar el radio button correcto por su valor
+                found = False
+                for radio in radio_buttons:
+                    if radio.get_attribute('value') == lead_source:
+                        # Scroll al elemento
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", radio)
+                        time.sleep(1)
+                        
+                        # Intentar múltiples métodos para seleccionar
+                        try:
+                            # Método 1: JavaScript directo
+                            self.driver.execute_script("arguments[0].click(); arguments[0].checked = true;", radio)
+                        except:
+                            try:
+                                # Método 2: ActionChains
+                                actions = ActionChains(self.driver)
+                                actions.move_to_element(radio).click().perform()
+                            except:
+                                # Método 3: Click normal
+                                radio.click()
+                        
+                        # Verificar selección
+                        if radio.is_selected():
+                            self.logger.info(f"Radio button '{lead_source}' seleccionado exitosamente")
+                            found = True
+                            break
+                        else:
+                            self.logger.warning(f"Radio button no quedó seleccionado, intentando JavaScript directo")
+                            self.driver.execute_script(
+                                "arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                                radio
+                            )
+                
+                if not found:
+                    raise Exception(f"No se encontró el radio button para: {lead_source}")
+                
             except Exception as e:
-                self.logger.error(f"No se pudo encontrar el radio button para: {lead_source}")
+                self.logger.error(f"Error al seleccionar fuente de información: {str(e)}")
                 self.logger.error("Radio buttons disponibles:")
-                radio_buttons = self.driver.find_elements(By.XPATH, "//input[@type='radio']")
                 for rb in radio_buttons:
                     self.logger.error(f"- value: {rb.get_attribute('value')}")
-                raise Exception(f"Error al seleccionar fuente de información: {lead_source}")
+                raise
+            
+            # Manejar checkboxes requeridos
+            checkboxes = {
+                "b2dbe7ba-266d-48f3-bbd3-1035700ded97": "Eligible",  # Checkbox de elegibilidad
+                "ca6efbd7-f16a-4b7a-8a70-213de5920544": "Terms",     # Términos y condiciones
+                "f0f70521-3e33-4805-b696-6b5c6e55a6fc": "Competitor" # Checkbox de competidor
+            }
+            
+            # Scroll al final del formulario primero
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            
+            for checkbox_id, checkbox_name in checkboxes.items():
+                # Solo marcar el checkbox de competidor si es requerido
+                if checkbox_name == "Competitor" and not row_data.get('is_competitor'):
+                    continue
+                    
+                if not mark_checkbox(checkbox_id):
+                    raise Exception(f"No se pudo marcar el checkbox {checkbox_name}")
+                
+                time.sleep(1)  # Esperar entre checkboxes
 
-            # Confirmaciones
-            self.logger.info("Marcando confirmaciones")
-            self.driver.find_element(By.ID, "teamConfirmation").click()
-            self.driver.find_element(By.ID, "termsConditions").click()
+            # Esperar para revisión final
+            self.logger.info("Esperando 10 segundos para revisión final")
+            time.sleep(10)
 
-            # Enviar formulario
-            self.logger.info("Enviando formulario")
-            submit_button = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-            submit_button.click()
-
-            # Esperar a que se procese el envío
-            self.logger.info(f"Esperando {self.wait_time} segundos para procesamiento")
-            time.sleep(self.wait_time)
-
-            self.logger.info("Formulario enviado exitosamente")
+            self.logger.info("Formulario llenado exitosamente")
             return True, None
 
         except Exception as e:
@@ -588,8 +770,8 @@ class FormAutomation:
             self.logger.info(f"\n=== Iniciando llenado de miembro {member_num} ===")
             
             # Prefijos para los campos según el número de miembro
-            prefix = "" if member_num == 1 else f"member{member_num}_"
-            id_suffix = "1" if member_num == 1 else str(member_num)
+            prefix = f"member{member_num}_"
+            id_suffix = str(member_num)
             
             # Verificar si hay datos para este miembro
             if not pd.notna(row_data.get(f'{prefix}first_name')):
@@ -610,47 +792,9 @@ class FormAutomation:
                     if not self.safe_send_keys(field_id, value):
                         raise Exception(f"Error al llenar {field_id}")
             
-            # Seleccionar código de teléfono
-            phone_code = self.default_phone_code
-            if not self.safe_select_option(f"phoneCode{id_suffix}", phone_code):
+            # Seleccionar código de teléfono (siempre +51 para Perú)
+            if not self.safe_select_option(f"phoneCode{id_suffix}", "+51"):
                 raise Exception(f"Error al seleccionar código de teléfono para miembro {member_num}")
-            
-            # Verificar si tiene universidad diferente
-            member_university = row_data.get(f'{prefix}university')
-            if pd.notna(member_university) and member_university.strip():
-                self.logger.info(f"Miembro {member_num} tiene universidad diferente: {member_university}")
-                
-                try:
-                    # Marcar checkbox usando JavaScript
-                    checkbox = self.driver.find_element(By.ID, f"differentUniversity{id_suffix}")
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
-                    time.sleep(1)
-                    self.driver.execute_script("arguments[0].click();", checkbox)
-                    time.sleep(1)
-                    
-                    # Verificar si se marcó
-                    if checkbox.is_selected():
-                        self.logger.info(f"Checkbox marcado exitosamente para miembro {member_num}")
-                        
-                        # Seleccionar país
-                        country_code = self.country_codes.get(row_data['country'])
-                        self.safe_select_option(f"memberCountry{id_suffix}", country_code)
-                        time.sleep(1)
-                        
-                        # Seleccionar ciudad
-                        self.safe_select_option(f"memberCity{id_suffix}", row_data['city'])
-                        time.sleep(1)
-                        
-                        # Seleccionar universidad
-                        self.select_university(f"memberUniversity{id_suffix}", member_university, f"otherUniversity{id_suffix}")
-                    else:
-                        self.logger.warning(f"No se pudo marcar el checkbox para miembro {member_num}")
-                
-                except Exception as e:
-                    self.logger.error(f"Error procesando universidad del miembro {member_num}: {str(e)}")
-                    raise
-            else:
-                self.logger.info(f"Miembro {member_num} usa la universidad principal")
             
             self.logger.info(f"=== Finalizado llenado de miembro {member_num} ===\n")
             
@@ -757,9 +901,23 @@ class FormAutomation:
                 self.logger.info(f"Startup: {row['startup_name']}")
                 
                 try:
+                    self.logger.info(f"Intentando navegar a URL: {self.form_url}")
                     self.driver.get(self.form_url)
-                    self.logger.info(f"Navegando a: {self.form_url}")
-                    time.sleep(self.wait_time)
+                    current_url = self.driver.current_url
+                    self.logger.info(f"URL actual: {current_url}")
+                    
+                    # Aumentar tiempo de espera para sitio externo
+                    self.logger.info("Esperando 5 segundos para carga completa...")
+                    time.sleep(5)  # Esperar 5 segundos para que la página se cargue completamente
+                    
+                    # Verificación más estricta de la URL
+                    if "hultprize.org" not in current_url:
+                        error_msg = f"Error: URL incorrecta. Esperada: hultprize.org, Actual: {current_url}"
+                        self.logger.error(error_msg)
+                        screenshot_path = self.take_error_screenshot(error_msg)
+                        raise Exception(f"No se pudo acceder al formulario de Hult Prize. URL actual: {current_url}")
+                    
+                    self.logger.info("URL verificada correctamente, procediendo con el llenado del formulario")
                     
                     success, error = self.fill_form(row)
                     
